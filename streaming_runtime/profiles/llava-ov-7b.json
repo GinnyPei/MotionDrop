@@ -1,0 +1,48 @@
+{
+  "schema": "motiondrop_latency_model_v1",
+  "units": "milliseconds",
+  "equation": "alpha1*visual_tokens + alpha2*visual_tokens^2 + beta1*retained_tokens + beta2*retained_tokens^2 + gamma",
+  "coefficients": {
+    "alpha1": 0.07000405308804077,
+    "alpha2": 0.0,
+    "beta1": 0.0,
+    "beta2": 0.0005219325737092961,
+    "gamma": 47.26166356404619
+  },
+  "metadata": {
+    "model_alias": "llava-ov-7b",
+    "model": "llava-hf/llava-onevision-qwen2-7b-ov-hf",
+    "platform": {
+      "host": "AI-cluster-1",
+      "gpu_names": [
+        "NVIDIA GeForce RTX 3080 Ti",
+        "NVIDIA GeForce RTX 3080 Ti",
+        "NVIDIA GeForce RTX 3080 Ti",
+        "NVIDIA GeForce RTX 3080 Ti"
+      ],
+      "gpu_count": 4,
+      "torch": "2.14.0+cu130"
+    },
+    "measurement": "cuda_event_max_across_visible_devices",
+    "profile": {
+      "warmup": 1,
+      "repeats": 3,
+      "encoder_samples": [
+        {"frame_count": 1, "visual_tokens": 196, "latency_ms": 22.42969512939453},
+        {"frame_count": 2, "visual_tokens": 392, "latency_ms": 42.00960159301758},
+        {"frame_count": 4, "visual_tokens": 784, "latency_ms": 64.76390075683594}
+      ],
+      "prefill_samples": [
+        {"retained_tokens": 32, "latency_ms": 39.623680114746094},
+        {"retained_tokens": 128, "latency_ms": 41.70035171508789},
+        {"retained_tokens": 512, "latency_ms": 173.2106170654297}
+      ]
+    }
+  },
+  "fit_metrics": {
+    "combined_samples": 9,
+    "rmse_ms": 3.5078966078380582,
+    "max_absolute_error_ms": 6.395570377727182,
+    "r_squared": 0.9970731035740091
+  }
+}

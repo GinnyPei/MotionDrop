@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MotionDrop Live Demo</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #080b12; color: #edf2ff; }
+    header { padding: 18px 26px; border-bottom: 1px solid #252b3a; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    h1 { margin: 0; font-size: 21px; letter-spacing: .02em; }
+    .badge { padding: 7px 11px; border-radius: 999px; background: #202637; color: #aeb9d5; font-size: 13px; }
+    .badge.live { background: #113c2d; color: #72efbc; }
+    main { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(340px, .85fr); gap: 20px; padding: 20px; max-width: 1560px; margin: auto; }
+    .panel { background: #111620; border: 1px solid #252b3a; border-radius: 16px; overflow: hidden; box-shadow: 0 16px 40px #0005; }
+    .panel-title { padding: 12px 16px; border-bottom: 1px solid #252b3a; color: #aeb9d5; font-size: 13px; display: flex; justify-content: space-between; }
+    .source { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #252b3a; }
+    .source input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; padding: 9px 10px; }
+    .source button { padding: 0 14px; }
+    .source-error { color: #ff9cad; font-size: 12px; padding: 0 12px 8px; display: none; }
+    .stage { position: relative; background: #000; }
+    video { display: block; width: 100%; max-height: 62vh; background: #000; }
+    .subtitle { position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%); max-width: 88%; padding: 8px 14px; border-radius: 10px; background: #000b; color: #fff; font-size: 18px; line-height: 1.45; text-align: center; opacity: 0; transition: opacity .35s; pointer-events: none; }
+    .subtitle.show { opacity: 1; }
+    .subtitle.alert { background: #8a1f2bdd; }
+    .metrics { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: #252b3a; }
+    .metric { background: #111620; padding: 11px 14px; }
+    .metric b { display: block; font-size: 16px; margin-top: 3px; }
+    .metric span { color: #7f8aa6; font-size: 11px; }
+    .track { height: 22vh; min-height: 150px; overflow-y: auto; padding: 10px 16px; font-size: 14px; line-height: 1.6; }
+    .track .line { display: flex; gap: 10px; }
+    .track .time { color: #7f8aa6; font-variant-numeric: tabular-nums; flex: none; }
+    .track .empty { color: #5d6782; }
+    .side { display: flex; flex-direction: column; }
+    .tasks { padding: 10px 14px; border-bottom: 1px solid #252b3a; display: flex; flex-direction: column; gap: 8px; min-height: 48px; }
+    .task { display: flex; align-items: center; gap: 10px; background: #182032; border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+    .task .kind { flex: none; font-size: 11px; padding: 3px 7px; border-radius: 6px; background: #2b3a63; color: #b8c8ff; }
+    .task .kind.watch { background: #5a2f16; color: #ffc99e; }
+    .task .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .task .count { color: #7f8aa6; font-size: 11px; flex: none; }
+    .task button { padding: 4px 9px; font-size: 12px; background: #3a2230; color: #ffb3c4; }
+    .chat { height: 46vh; min-height: 300px; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .message { padding: 10px 12px; border-radius: 12px; line-height: 1.55; white-space: pre-wrap; }
+    .user { align-self: flex-end; background: #3159d6; max-width: 86%; }
+    .assistant { align-self: flex-start; background: #202637; max-width: 94%; }
+    .alert { align-self: flex-start; background: #4a1d26; border: 1px solid #8a3343; max-width: 94%; }
+    .system { align-self: center; color: #8d98b4; font-size: 12px; padding: 2px 8px; }
+    .meta { color: #7f8aa6; font-size: 11px; margin-top: 5px; }
+    form { padding: 12px; border-top: 1px solid #252b3a; display: flex; gap: 8px; }
+    select, input { border: 1px solid #343d52; border-radius: 10px; background: #0c1018; color: white; padding: 11px; font-size: 14px; }
+    input { flex: 1; min-width: 0; }
+    button { border: 0; border-radius: 10px; background: #4b72ee; color: white; padding: 0 16px; font-weight: 650; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .55; }
+    .hint { padding: 0 14px 12px; color: #7f8aa6; font-size: 12px; line-height: 1.5; }
+    @media (max-width: 960px) { main { grid-template-columns: 1fr; padding: 12px; } .metrics { grid-template-columns: repeat(3, 1fr); } .chat { height: 40vh; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MotionDrop · Live Multi-Task</h1>
+    <div id="badge" class="badge">正在连接</div>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="panel-title"><span id="videoTitle">流式视频</span><span id="budget"></span></div>
+      <form id="sourceForm" class="source">
+        <input id="sourcePath" autocomplete="off" spellcheck="false" placeholder="样本视频的绝对路径，或包含 video.mp4 的样本目录">
+        <button id="sourceLoad" type="submit">加载</button>
+      </form>
+      <div id="sourceError" class="source-error"></div>
+      <div class="stage">
+        <video id="video" controls preload="metadata"></video>
+        <div id="subtitle" class="subtitle"></div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>播放 / 已处理</span><b id="playback">0.0s</b></div>
+        <div class="metric"><span>待处理窗口</span><b id="pending">0</b></div>
+        <div class="metric"><span>KV 长度</span><b id="kv">0</b></div>
+        <div class="metric"><span>常驻视频起点</span><b id="oldest">--</b></div>
+        <div class="metric"><span>记忆条目</span><b id="memory">0</b></div>
+      </div>
+      <div class="panel-title"><span>解说轨道</span><span id="trackStats"></span></div>
+      <div id="track" class="track"><div class="empty">创建持续任务（例如“解说这场比赛”）后，输出会按视频时间出现在这里。</div></div>
+    </section>
+    <section class="panel side">
+      <div class="panel-title"><span>任务</span><span id="taskCount">0 个进行中</span></div>
+      <div id="tasks" class="tasks"></div>
+      <div id="chat" class="chat">
+        <div class="message assistant">播放视频后，服务端会持续编码。可以随时提问，也可以下达持续任务（“解说这场比赛”）或条件提醒（“有人得分就提醒我”）。</div>
+      </div>
+      <form id="form">
+        <select id="kind" title="消息类型">
+          <option value="auto">自动</option>
+          <option value="instant">提问</option>
+          <option value="standing">持续任务</option>
+          <option value="watch">条件提醒</option>
+          <option value="update">修改任务</option>
+          <option value="cancel">停止任务</option>
+        </select>
+        <input id="question" autocomplete="off" placeholder="例如：解说这场乒乓球比赛 / 现在比分多少？">
+        <button id="ask" type="submit">发送</button>
+      </form>
+      <div class="hint">“自动”由模型判断意图。提问会优先于正在生成的解说执行。倒退拖动视频会开启新会话。</div>
+    </section>
+  </main>
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const video = $('#video'), badge = $('#badge'), chat = $('#chat'), track = $('#track');
+    const form = $('#form'), question = $('#question'), ask = $('#ask'), kind = $('#kind');
+    const subtitle = $('#subtitle');
+    let active = false, busy = false, lastSent = 0, timer = null, subtitleTimer = null;
+    let lastSeq = 0, trackEmpty = true;
+    const KIND_LABEL = {instant: '提问', standing: '持续任务', watch: '条件提醒', update: '修改任务', cancel: '停止任务'};
+
+    async function api(path, body) {
+      const options = body === undefined ? {} : {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+      };
+      const response = await fetch(path, options);
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || response.statusText);
+      return data;
+    }
+
+    const clock = (s) => s == null ? '--:--' : `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+    function renderTasks(tasks) {
+      const box = $('#tasks');
+      box.replaceChildren();
+      const running = (tasks || []).filter(t => t.status === 'active');
+      $('#taskCount').textContent = `${running.length} 个进行中`;
+      for (const task of running) {
+        const row = document.createElement('div'); row.className = 'task';
+        const tag = document.createElement('span'); tag.className = `kind ${task.kind}`;
+        tag.textContent = task.kind === 'watch' ? '提醒' : '持续';
+        const text = document.createElement('span'); text.className = 'text';
+        text.textContent = task.instruction + (task.amendments.length ? ` ＋${task.amendments.length} 条修改` : '');
+        text.title = [task.instruction, ...task.amendments].join('\n');
+        const count = document.createElement('span'); count.className = 'count';
+        count.textContent = task.kind === 'watch' ? `检查 ${task.checks} · 触发 ${task.outputs}` : `${task.outputs} 条 · 静默 ${task.silent} · 被抢占 ${task.preempted}`;
+        const stop = document.createElement('button'); stop.textContent = '停止';
+        stop.onclick = async () => { try { setStatus((await api('/api/tasks/cancel', {task_id: task.id})).status); } catch (e) { addMessage('system', e.message); } };
+        row.append(tag, text, count, stop); box.appendChild(row);
+      }
+    }
+
+    function setStatus(data) {
+      if (!data) return;
+      $('#playback').textContent = `${video.currentTime.toFixed(1)} / ${(data.video_seconds ?? 0).toFixed(1)}s`;
+      $('#pending').textContent = data.pending_windows ?? 0;
+      const trunk = data.trunk || {};
+      $('#kv').textContent = trunk.cache_length ?? 0;
+      $('#oldest').textContent = clock(trunk.oldest_resident_seconds);
+      $('#memory').textContent = data.memory_entries ?? 0;
+      renderTasks(data.tasks);
+    }
+
+    function addMessage(cls, text, meta = '') {
+      const node = document.createElement('div');
+      node.className = cls === 'system' ? 'system' : `message ${cls}`;
+      node.textContent = text;
+      if (meta) { const d = document.createElement('div'); d.className = 'meta'; d.textContent = meta; node.appendChild(d); }
+      chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
+    }
+
+    function addTrackLine(seconds, text) {
+      if (trackEmpty) { track.replaceChildren(); trackEmpty = false; }
+      const line = document.createElement('div'); line.className = 'line';
+      const time = document.createElement('span'); time.className = 'time'; time.textContent = clock(seconds);
+      const body = document.createElement('span'); body.textContent = text;
+      line.append(time, body); track.appendChild(line); track.scrollTop = track.scrollHeight;
+    }
+
+    function showSubtitle(text, alert = false) {
+      subtitle.textContent = text;
+      subtitle.className = `subtitle show${alert ? ' alert' : ''}`;
+      clearTimeout(subtitleTimer);
+      subtitleTimer = setTimeout(() => subtitle.classList.remove('show'), 4500);
+    }
+
+    function onEvent(event) {
+      lastSeq = Math.max(lastSeq, event.seq);
+      if (event.type === 'task_output') {
+        addTrackLine(event.seconds, event.text); showSubtitle(event.text);
+        const lag = event.lag_seconds == null ? '' : ` · 延迟 ${event.lag_seconds.toFixed(2)}s`;
+        $('#trackStats').textContent = `最近一条 ${clock(event.seconds)}${lag}`;
+      } else if (event.type === 'alert') {
+        addMessage('alert', `🔔 ${event.text}`, `视频 ${clock(event.seconds)} 触发 · p=${(event.p_yes ?? 0).toFixed(2)}`);
+        showSubtitle(event.text, true);
+      } else if (event.type === 'task_created') {
+        addMessage('system', `已创建${event.task.kind === 'watch' ? '条件提醒' : '持续任务'}：${event.task.instruction}`);
+      } else if (event.type === 'task_updated') {
+        addMessage('system', `任务已修改：${event.task.amendments.at(-1)}`);
+      } else if (event.type === 'task_cancelled') {
+        addMessage('system', `任务已停止：${event.task.instruction}`);
+      } else if (event.type === 'session_started') {
+        track.replaceChildren(); trackEmpty = true;
+        const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = '新会话已开始。'; track.appendChild(empty);
+      } else if (event.type === 'video_changed') {
+        if (event.video !== $('#sourcePath').value || !active) {
+          api('/api/config').then(config => {
+            if (config.video_version !== videoVersion) {
+              applyConfig(config);
+              resetView(`视频已切换为 ${config.video_path}。`);
+            }
+          });
+        }
+      } else if (event.type === 'error') {
+        addMessage('system', `运行错误：${event.error}`);
+      }
+    }
+
+    function connectEvents() {
+      const source = new EventSource(`/api/events?since=${lastSeq}`);
+      source.onmessage = (message) => onEvent(JSON.parse(message.data));
+      source.onerror = () => { badge.textContent = '事件流重连中…'; };
+      source.onopen = () => { if (active) { badge.textContent = '实时会话已启动'; badge.className = 'badge live'; } };
+    }
+
+    function resetView(message) {
+      active = false; lastSent = 0; clearInterval(timer);
+      chat.replaceChildren(); renderTasks([]);
+      track.replaceChildren(); trackEmpty = true;
+      const empty = document.createElement('div'); empty.className = 'empty';
+      empty.textContent = '创建持续任务（例如“解说这场比赛”）后，输出会按视频时间出现在这里。';
+      track.appendChild(empty);
+      $('#trackStats').textContent = '';
+      addMessage('assistant', message);
+      badge.textContent = '模型已就绪，点击播放'; badge.className = 'badge';
+    }
+
+    let videoVersion = null;
+    function applyConfig(config) {
+      $('#videoTitle').textContent = `${config.video} · ${config.model}`;
+      $('#budget').textContent = `${config.budget} · ${config.stream_fps} fps · KV 上限 ${config.max_context_tokens ?? '∞'}`;
+      $('#sourcePath').value = config.video_path;
+      if (config.video_version !== videoVersion) {
+        videoVersion = config.video_version;
+        video.src = `/video?v=${videoVersion}`;
+      }
+    }
+
+    $('#sourceForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const error = $('#sourceError');
+      error.style.display = 'none';
+      $('#sourceLoad').disabled = true;
+      try {
+        video.pause();
+        const config = await api('/api/video', {path: $('#sourcePath').value});
+        applyConfig(config);
+        resetView(`已切换到 ${config.video_path}（${clock(config.duration_seconds)}）。点击播放开始新会话。`);
+      } catch (e) {
+        error.textContent = e.message; error.style.display = 'block';
+      } finally {
+        $('#sourceLoad').disabled = false;
+      }
+    });
+
+    async function startSession() {
+      const data = await api('/api/start', {});
+      active = true; lastSent = 0;
+      badge.textContent = '实时会话已启动'; badge.className = 'badge live';
+      setStatus(data);
+    }
+
+    async function advance() {
+      if (!active) return;
+      try {
+        const data = await api('/api/advance', {seconds: video.currentTime});
+        lastSent = video.currentTime; setStatus(data);
+      } catch (error) { badge.textContent = error.message; badge.className = 'badge'; }
+    }
+
+    video.addEventListener('play', async () => {
+      if (!active) await startSession();
+      clearInterval(timer); timer = setInterval(advance, 500); advance();
+    });
+    video.addEventListener('pause', () => { clearInterval(timer); advance(); });
+    video.addEventListener('seeking', async () => {
+      if (active && video.currentTime + 1 < lastSent) await startSession();
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const text = question.value.trim();
+      if (!text || busy) return;
+      if (!active) await startSession();
+      busy = true; ask.disabled = true;
+      const chosen = kind.value;
+      addMessage('user', text, `视频 ${video.currentTime.toFixed(1)} 秒 · ${chosen === 'auto' ? '自动' : KIND_LABEL[chosen]}`);
+      question.value = '';
+      try {
+        const data = await api('/api/message', {text, seconds: video.currentTime, kind: chosen});
+        if (data.routing) addMessage('system', `识别为：${KIND_LABEL[data.kind]}`);
+        if (data.kind === 'instant') {
+          const a = data.answer;
+          addMessage('assistant', a.answer, `首 token ${((a.stats.time_to_first_token_seconds || 0) * 1000).toFixed(0)} ms · 排队 ${(a.wait_seconds * 1000).toFixed(0)} ms · 引用记忆 ${a.memory_used} 条`);
+        } else if (!data.task) {
+          addMessage('system', '没有可修改或停止的任务。');
+        }
+        setStatus(data.status);
+      } catch (error) {
+        addMessage('assistant', `请求失败：${error.message}`);
+      } finally {
+        busy = false; ask.disabled = false; question.focus();
+      }
+    });
+
+    api('/api/config').then(config => {
+      applyConfig(config);
+      badge.textContent = '模型已就绪，点击播放';
+      connectEvents();
+    }).catch(error => { badge.textContent = error.message; });
+  </script>
+</body>
+</html>
