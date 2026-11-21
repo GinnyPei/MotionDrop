@@ -19,8 +19,13 @@ def encode_video_features_with_attention(
     pixels: torch.Tensor,
     *,
     capture_attention: bool,
+    feature_device: torch.device | str | None = None,
 ):
-    """Encode video and capture retained-layer mean-received patch attention."""
+    """Encode video and capture retained-layer mean-received patch attention.
+
+    ``feature_device`` receives each chunk's projected features as soon as it is
+    encoded (default: where the projector put them).
+    """
 
     captured: list[torch.Tensor] = []
     handle = None
@@ -66,15 +71,15 @@ def encode_video_features_with_attention(
         # held by the vision tower's per-layer hidden states.
         samples = []
         for sample in pixels:
-            chunks = [
-                model.model.get_video_features(
+            chunks = []
+            for start in range(0, int(sample.shape[0]), FRAME_CHUNK):
+                chunk = model.model.get_video_features(
                     sample[start : start + FRAME_CHUNK].unsqueeze(0).to(visual_device),
                     vision_feature_layer=model.config.vision_feature_layer,
                     vision_feature_select_strategy=model.config.vision_feature_select_strategy,
                     return_dict=True,
                 ).pooler_output
-                for start in range(0, int(sample.shape[0]), FRAME_CHUNK)
-            ]
+                chunks.append(chunk if feature_device is None else chunk.to(feature_device))
             samples.append(torch.cat(chunks, dim=1))
         outputs = BaseModelOutputWithPooling(pooler_output=torch.cat(samples, dim=0))
     finally:

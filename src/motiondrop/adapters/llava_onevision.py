@@ -33,6 +33,9 @@ class LlavaOnevisionMotionDropBatchAdapter:
         self.answer_token_sequences = label_token_sequences(processor.tokenizer, answer_labels)
         self.motiondrop = motiondrop or MotionDropConfig()
         self.processor.tokenizer.padding_side = "right"
+        # (conversations, processor inputs, video features, spatial attention)
+        # of the last batch; see _encoded_batch.
+        self._last_batch: tuple | None = None
 
     def _video_features_with_attention(
         self,
@@ -42,10 +45,13 @@ class LlavaOnevisionMotionDropBatchAdapter:
         capture_attention: bool,
     ):
         del visual_device
+        # Uncompressed features of a long clip outgrow GPU memory; keep them on
+        # the host and move only the selected tokens to the language model.
         return encode_video_features_with_attention(
             self.model,
             pixels,
             capture_attention=capture_attention,
+            feature_device="cpu",
         )
 
     def _processor_batch(self, conversations: Sequence[list[dict]]) -> dict[str, torch.Tensor]:
@@ -82,6 +88,41 @@ class LlavaOnevisionMotionDropBatchAdapter:
             raise ValueError(f"LLaVA-OneVision processor omitted required fields: {missing}")
         return result
 
+    def _encoded_batch(self, conversations: Sequence[list[dict]], *, capture_attention: bool):
+        """Processor inputs and encoded video, reused when the same batch repeats.
+
+        Benchmarks score one batch at several compression rates; preprocessing
+        and the vision encoder do not depend on the rate, so they run once.
+        """
+
+        cached = self._last_batch
+        if (
+            cached is not None
+            and cached[0] is conversations
+            and (cached[3] is not None or not capture_attention)
+        ):
+            return cached[1:]
+        self._last_batch = None
+        processor_inputs = self._processor_batch(conversations)
+        batch_size = len(conversations)
+        input_ids = processor_inputs["input_ids"]
+        pixels = processor_inputs["pixel_values_videos"]
+        if input_ids.shape[0] != batch_size or pixels.shape[0] != batch_size:
+            raise ValueError(
+                f"Expected one video per sample, batch={batch_size}, "
+                f"input_ids={tuple(input_ids.shape)}, pixels={tuple(pixels.shape)}"
+            )
+        video_outputs, spatial_attention = self._video_features_with_attention(
+            pixels,
+            module_device(self.model.model.vision_tower),
+            capture_attention=capture_attention,
+        )
+        video_features = video_outputs.pooler_output
+        if video_features.ndim != 3 or int(video_features.shape[0]) != batch_size:
+            raise ValueError(f"Unexpected LLaVA video feature shape: {tuple(video_features.shape)}")
+        self._last_batch = (conversations, processor_inputs, video_features, spatial_attention)
+        return self._last_batch[1:]
+
     @torch.inference_mode()
     def infer(
         self,
@@ -101,32 +142,19 @@ class LlavaOnevisionMotionDropBatchAdapter:
             target_compression=target_compression,
             preserve_token_order=True,
         )
-        processor_inputs = self._processor_batch(conversations)
+        processor_inputs, video_features, spatial_attention = self._encoded_batch(
+            conversations, capture_attention=target_compression > 0.0
+        )
         batch_size = len(conversations)
-        input_ids_cpu = processor_inputs["input_ids"]
-        attention_cpu = processor_inputs["attention_mask"]
-        pixels = processor_inputs["pixel_values_videos"]
-        if input_ids_cpu.shape[0] != batch_size or pixels.shape[0] != batch_size:
-            raise ValueError(
-                f"Expected one video per sample, batch={batch_size}, "
-                f"input_ids={tuple(input_ids_cpu.shape)}, pixels={tuple(pixels.shape)}"
-            )
 
         embedding = self.model.model.get_input_embeddings()
         embedding_device = module_device(embedding)
-        visual_device = module_device(self.model.model.vision_tower)
-        input_ids = input_ids_cpu.to(embedding_device)
-        attention_mask = attention_cpu.to(embedding_device)
-        inputs_embeds = embedding(input_ids)
-
-        video_outputs, spatial_attention = self._video_features_with_attention(
-            pixels,
-            visual_device,
-            capture_attention=target_compression > 0.0,
-        )
-        video_features = video_outputs.pooler_output
-        if video_features.ndim != 3 or int(video_features.shape[0]) != batch_size:
-            raise ValueError(f"Unexpected LLaVA video feature shape: {tuple(video_features.shape)}")
+        input_ids = processor_inputs["input_ids"].to(embedding_device)
+        attention_mask = processor_inputs["attention_mask"].to(embedding_device)
+        # Only the text around the video placeholders is embedded; the
+        # placeholder block is replaced by the selected visual tokens.
+        embed_dtype = embedding.weight.dtype
+        hidden_size = int(embedding.weight.shape[-1])
 
         video_token_id = int(self.model.config.video_token_id)
         newline = self.model.model.image_newline
@@ -200,13 +228,13 @@ class LlavaOnevisionMotionDropBatchAdapter:
                     newline[None].to(selected_features.device, selected_features.dtype),
                 ),
                 dim=0,
-            ).to(embedding_device, inputs_embeds.dtype)
+            ).to(embedding_device, embed_dtype)
             compressed_embeds.append(
                 torch.cat(
                     (
-                        inputs_embeds[sample_index, prefix_indices],
+                        embedding(input_ids[sample_index, prefix_indices]),
                         visual_block,
-                        inputs_embeds[sample_index, suffix_indices],
+                        embedding(input_ids[sample_index, suffix_indices]),
                     ),
                     dim=0,
                 )
@@ -215,8 +243,9 @@ class LlavaOnevisionMotionDropBatchAdapter:
 
         lengths = [int(value.shape[0]) for value in compressed_embeds]
         max_length = max(lengths)
-        hidden_size = int(inputs_embeds.shape[-1])
-        packed_embeds = inputs_embeds.new_zeros(batch_size, max_length, hidden_size)
+        packed_embeds = torch.zeros(
+            batch_size, max_length, hidden_size, dtype=embed_dtype, device=embedding_device
+        )
         packed_attention = attention_mask.new_zeros(batch_size, max_length)
         packed_positions = torch.zeros(
             batch_size, max_length, dtype=torch.long, device=embedding_device
@@ -241,7 +270,9 @@ class LlavaOnevisionMotionDropBatchAdapter:
 
         def continuation_hidden(prefix_token_id: int) -> torch.Tensor:
             extended_length = max_length + 1
-            extended_embeds = inputs_embeds.new_zeros(batch_size, extended_length, hidden_size)
+            extended_embeds = torch.zeros(
+                batch_size, extended_length, hidden_size, dtype=embed_dtype, device=embedding_device
+            )
             extended_attention = attention_mask.new_zeros(batch_size, extended_length)
             extended_positions = torch.zeros(
                 batch_size,

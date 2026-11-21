@@ -8,6 +8,7 @@ import json
 import time
 import traceback
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +44,9 @@ from motiondrop.runtime import (
     validate_compression_stats,
     write_json,
 )
+
+# Video clips decoded concurrently ahead of inference.
+DECODE_WORKERS = 4
 
 
 @dataclass(frozen=True)
@@ -427,22 +431,30 @@ def run(args: argparse.Namespace) -> None:
                 traceback.print_exc()
                 torch.cuda.empty_cache()
 
-        for start in tqdm(range(0, len(pending), args.batch_size), desc="OVO-Bench"):
-            prepared: list[tuple[InferenceUnit, list, list[int]]] = []
-            for unit in pending[start : start + args.batch_size]:
-                try:
-                    frames, frame_indices = load_video_frames(
-                        unit.video_path,
-                        fps=args.fps,
-                        max_frames=args.max_frames,
-                    )
-                    prepared.append((unit, frames, frame_indices))
-                except Exception as exc:
-                    if args.debug:
-                        raise
-                    failures.append({"unit_id": unit.unit_id, "error": repr(exc)})
-            if prepared:
-                infer_group(prepared)
+        def load(unit: InferenceUnit):
+            return load_video_frames(unit.video_path, fps=args.fps, max_frames=args.max_frames)
+
+        # Decoding a long clip at 1 fps takes longer than scoring it, so the
+        # next units are decoded in background threads while the GPU works.
+        lookahead = args.batch_size * DECODE_WORKERS
+        with ThreadPoolExecutor(max_workers=DECODE_WORKERS) as pool:
+            decoded = [pool.submit(load, unit) for unit in pending[:lookahead]]
+            for start in tqdm(range(0, len(pending), args.batch_size), desc="OVO-Bench"):
+                prepared: list[tuple[InferenceUnit, list, list[int]]] = []
+                for index in range(start, min(start + args.batch_size, len(pending))):
+                    if index + lookahead < len(pending):
+                        decoded.append(pool.submit(load, pending[index + lookahead]))
+                    unit = pending[index]
+                    try:
+                        frames, frame_indices = decoded[index].result()
+                        prepared.append((unit, frames, frame_indices))
+                    except Exception as exc:
+                        if args.debug:
+                            raise
+                        failures.append({"unit_id": unit.unit_id, "error": repr(exc)})
+                    decoded[index] = None
+                if prepared:
+                    infer_group(prepared)
 
     expected_ids = {unit.unit_id for unit in units}
     any_missing = False
